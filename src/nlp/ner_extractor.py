@@ -38,6 +38,12 @@ try:
 except ImportError:
     _SPACY_AVAILABLE = False
 
+try:
+    from rapidfuzz import process, fuzz
+    _RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    _RAPIDFUZZ_AVAILABLE = False
+
 # Tambahkan root ke path agar bisa import config
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../"))
 
@@ -52,18 +58,24 @@ class NERResult:
 
     Atribut:
         skills          : daftar skill teknis yang dibutuhkan
+        skill_confidences : confidence score per skill [0.0-1.0]
         pengalaman_min  : minimum pengalaman kerja dalam tahun (None = tidak disebutkan)
         level           : level seniority jika disebutkan ('junior'/'mid'/'senior')
         lokasi          : kota/mode lokasi penempatan (None = tidak disebutkan)
+        lokasi_confidence : confidence score untuk lokasi [0.0-1.0]
         project_type    : tipe proyek yang dibutuhkan (None = tidak disebutkan)
+        project_type_confidence : confidence score untuk project_type [0.0-1.0]
         start_date      : tanggal mulai proyek (None = tidak disebutkan)
         raw_query       : query asli sebelum diproses
     """
     skills: list[str] = field(default_factory=list)
+    skill_confidences: dict[str, float] = field(default_factory=dict)
     pengalaman_min: Optional[float] = None
     level: Optional[str] = None
     lokasi: Optional[str] = None
+    lokasi_confidence: Optional[float] = None
     project_type: Optional[str] = None
+    project_type_confidence: Optional[float] = None
     start_date: Optional[date] = None
     raw_query: str = ""
 
@@ -239,6 +251,178 @@ def _get_nlp():
     if _nlp_instance is None:
         _nlp_instance = _build_spacy_pipeline()
     return _nlp_instance
+
+
+# ─── RapidFuzz Fuzzy Matchers ─────────────────────────────────────────────────
+
+def _fuzzy_match_skills(
+    text: str, 
+    threshold: int = 80
+) -> list[tuple[str, float]]:
+    """
+    Fuzzy match skills dari text menggunakan RapidFuzz.
+    
+    Args:
+        text: Query text untuk dianalisis
+        threshold: Minimum similarity score (0-100), default 80
+                   80 chosen untuk toleransi typo seperti "Djnago" → "Django" (83.33%)
+    
+    Returns:
+        List of (canonical_skill_name, confidence) tuples
+    
+    Contoh:
+        "butuh Reactjs dan Djnago" → [
+            ('React.js', 0.93),
+            ('Django', 0.83)
+        ]
+        "Typescrypt" → [('TypeScript', 0.90)]
+        "Springboot" → [('Spring Boot', 0.95)]
+    """
+    if not _RAPIDFUZZ_AVAILABLE:
+        return []
+    
+    text_lower = text.lower()
+    # Tokenize dengan mempertahankan punctuation untuk skill seperti "React.js"
+    words = re.findall(r'\b[\w.#+]+\b', text_lower)
+    
+    # Filter out common stopwords yang bukan skill
+    stopwords = {'saya', 'butuh', 'cari', 'developer', 'programmer', 'untuk', 
+                 'dengan', 'dan', 'atau', 'di', 'pada', 'dari', 'ke', 
+                 'minimal', 'maksimal', 'tahun', 'bulan', 'proyek', 'project',
+                 'senior', 'junior', 'mid', 'level', 'the', 'a', 'an'}
+    
+    matched_skills = {}
+    
+    for word in words:
+        # Skip kata-kata umum atau terlalu pendek
+        if len(word) < 3 or word in stopwords:
+            continue
+        
+        # Cari best match dari gazetteer
+        result = process.extractOne(
+            word,
+            SKILL_GAZETTEER.keys(),
+            scorer=fuzz.ratio,
+            score_cutoff=threshold
+        )
+        
+        if result:
+            matched_alias, score, _ = result
+            canonical = SKILL_GAZETTEER[matched_alias]
+            confidence = score / 100.0
+            
+            # Ambil yang confidence tertinggi jika skill sudah ada
+            if canonical not in matched_skills or confidence > matched_skills[canonical]:
+                matched_skills[canonical] = confidence
+    
+    return list(matched_skills.items())
+
+
+def _fuzzy_match_location(
+    text: str,
+    threshold: int = 75
+) -> Optional[tuple[str, float]]:
+    """
+    Fuzzy match location dari text.
+    
+    Args:
+        text: Query text
+        threshold: Minimum similarity score (0-100)
+    
+    Returns:
+        (canonical_location, confidence) atau None
+    
+    Contoh:
+        "Bandungg" → ('Bandung', 0.94)
+        "yogya" → ('Yogyakarta', 0.80)
+    """
+    if not _RAPIDFUZZ_AVAILABLE:
+        return None
+    
+    text_lower = text.lower()
+    words = text_lower.split()
+    
+    best_match = None
+    best_score = 0
+    
+    for word in words:
+        if len(word) < 3:  # Skip kata terlalu pendek
+            continue
+        
+        result = process.extractOne(
+            word,
+            LOCATION_GAZETTEER.keys(),
+            scorer=fuzz.ratio,
+            score_cutoff=threshold
+        )
+        
+        if result:
+            matched_key, score, _ = result
+            if score > best_score:
+                best_score = score
+                best_match = (LOCATION_GAZETTEER[matched_key], score / 100.0)
+    
+    return best_match
+
+
+def _fuzzy_match_project_type(
+    text: str,
+    threshold: int = 75
+) -> Optional[tuple[str, float]]:
+    """
+    Fuzzy match project type dari text.
+    
+    Args:
+        text: Query text
+        threshold: Minimum similarity score
+    
+    Returns:
+        (canonical_project_type, confidence) atau None
+    
+    Contoh:
+        "bankin" → ('banking', 0.91)
+        "enterprize" → ('enterprise', 0.89)
+    """
+    if not _RAPIDFUZZ_AVAILABLE:
+        return None
+    
+    text_lower = text.lower()
+    
+    # Try full text first untuk multi-word matches
+    result_full = process.extractOne(
+        text_lower,
+        PROJECT_TYPE_GAZETTEER.keys(),
+        scorer=fuzz.partial_ratio,
+        score_cutoff=threshold
+    )
+    
+    if result_full:
+        matched_key, score, _ = result_full
+        return (PROJECT_TYPE_GAZETTEER[matched_key], score / 100.0)
+    
+    # Fallback: try word by word
+    words = text_lower.split()
+    best_match = None
+    best_score = 0
+    
+    for word in words:
+        if len(word) < 3:
+            continue
+        
+        result = process.extractOne(
+            word,
+            PROJECT_TYPE_GAZETTEER.keys(),
+            scorer=fuzz.ratio,
+            score_cutoff=threshold
+        )
+        
+        if result:
+            matched_key, score, _ = result
+            if score > best_score:
+                best_score = score
+                best_match = (PROJECT_TYPE_GAZETTEER[matched_key], score / 100.0)
+    
+    return best_match
 
 
 # ─── Regex Extractors ─────────────────────────────────────────────────────────
@@ -447,55 +631,64 @@ def extract_entities(query: str) -> NERResult:
     nlp = _get_nlp()
 
     if nlp is not None:
-        # Gunakan spaCy EntityRuler
+        # Tier 1: Gunakan spaCy EntityRuler (exact match, confidence = 1.0)
         doc = nlp(query)
-        seen_skills: list[str] = []
-
+        seen_skills: dict[str, float] = {}
+        
         for ent in doc.ents:
             if ent.label_ == "SKILL":
                 canonical = ent.ent_id_ if ent.ent_id_ else ent.text
                 if canonical not in seen_skills:
-                    seen_skills.append(canonical)
+                    seen_skills[canonical] = 1.0  # Exact match
             elif ent.label_ == "LOCATION" and result.lokasi is None:
                 result.lokasi = ent.ent_id_ if ent.ent_id_ else ent.text.title()
+                result.lokasi_confidence = 1.0
             elif ent.label_ == "PROJECT_TYPE" and result.project_type is None:
                 result.project_type = ent.ent_id_ if ent.ent_id_ else ent.text.lower()
-
-        result.skills = seen_skills
+                result.project_type_confidence = 1.0
+        
+        # Tier 2: Fuzzy match jika exact match tidak menemukan hasil
+        if not seen_skills and _RAPIDFUZZ_AVAILABLE:
+            fuzzy_skills = _fuzzy_match_skills(query, threshold=80)
+            for skill, confidence in fuzzy_skills:
+                seen_skills[skill] = confidence
+        
+        if result.lokasi is None and _RAPIDFUZZ_AVAILABLE:
+            fuzzy_location = _fuzzy_match_location(query, threshold=80)
+            if fuzzy_location:
+                result.lokasi, result.lokasi_confidence = fuzzy_location
+        
+        if result.project_type is None and _RAPIDFUZZ_AVAILABLE:
+            fuzzy_proj = _fuzzy_match_project_type(query, threshold=80)
+            if fuzzy_proj:
+                result.project_type, result.project_type_confidence = fuzzy_proj
+        
+        result.skills = list(seen_skills.keys())
+        result.skill_confidences = seen_skills
 
     else:
-        # Fallback regex-based
-        skills, lokasi, project_type = _regex_fallback_extract(query)
-        result.skills = skills
-        result.lokasi = lokasi
-        result.project_type = project_type
+        # Fallback: regex-based jika spaCy tidak available
+        if _RAPIDFUZZ_AVAILABLE:
+            # Gunakan fuzzy matching langsung
+            fuzzy_skills = _fuzzy_match_skills(query, threshold=80)
+            result.skills = [skill for skill, _ in fuzzy_skills]
+            result.skill_confidences = dict(fuzzy_skills)
+            
+            fuzzy_loc = _fuzzy_match_location(query, threshold=80)
+            if fuzzy_loc:
+                result.lokasi, result.lokasi_confidence = fuzzy_loc
+            
+            fuzzy_proj = _fuzzy_match_project_type(query, threshold=80)
+            if fuzzy_proj:
+                result.project_type, result.project_type_confidence = fuzzy_proj
+        else:
+            # Last resort: pure regex (no confidence)
+            skills, lokasi, project_type = _regex_fallback_extract(query)
+            result.skills = skills
+            result.skill_confidences = {skill: 0.7 for skill in skills}  # Lower default
+            result.lokasi = lokasi
+            result.lokasi_confidence = 0.7 if lokasi else None
+            result.project_type = project_type
+            result.project_type_confidence = 0.7 if project_type else None
 
     return result
-
-
-# ─── Quick Test ───────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    test_queries = [
-        # Query lengkap seperti contoh di diskusi
-        "saya butuh front end, dengan kemampuan react dengan pengalaman diatas 2 tahun, "
-        "pengerjaan di Bandung dan mengerjakan proyek BANK, "
-        "proyek akan di kerjakan pada 20 Maret 2026 hingga 20 Desember 2026",
-
-        # Query singkat
-        "cari senior backend Java Spring Boot, minimal 4 tahun, Jakarta",
-
-        # Query dengan proyek mobile
-        "butuh Flutter developer mid level untuk proyek mobile banking",
-
-        # Query tanpa tanggal
-        "programmer frontend React.js TypeScript, 2 tahun, Bandung, web",
-    ]
-
-    for q in test_queries:
-        r = extract_entities(q)
-        print(f"\nQuery      : {q[:80]}...")
-        print(f"Skills     : {r.skills}")
-        print(f"Exp Min    : {r.pengalaman_min} thn | Level: {r.level}")
-        print(f"Lokasi     : {r.lokasi}")
-        print(f"Proj Type  : {r.project_type}")
-        print(f"Start Date : {r.start_date}")

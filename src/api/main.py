@@ -127,15 +127,23 @@ async def extract_only(query: str = Query(..., description="Query natural untuk 
     """
     **Debug** — Jalankan hanya modul NLP (Increment 1).
     Berguna untuk validasi hasil NER sebelum integrasi CBF & SAW.
+    
+    **NEW**: Sekarang menampilkan confidence scores untuk setiap entitas yang diekstrak.
+    - Confidence 1.0 = exact match
+    - Confidence 0.8-0.99 = fuzzy match dengan RapidFuzz
+    - Confidence < 0.8 = low confidence, perlu verifikasi
     """
     from src.nlp.ner_extractor import extract_entities
     result = extract_entities(query)
     return {
         "skills":         result.skills,
+        "skill_confidences": result.skill_confidences,
         "pengalaman_min": result.pengalaman_min,
         "level":          result.level,
         "lokasi":         result.lokasi,
+        "lokasi_confidence": result.lokasi_confidence,
         "project_type":   result.project_type,
+        "project_type_confidence": result.project_type_confidence,
         "start_date":     result.start_date.isoformat() if result.start_date else None,
         "raw_query":      result.raw_query,
     }
