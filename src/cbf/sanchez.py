@@ -209,20 +209,10 @@ class Neo4jKnowledgeGraph(KnowledgeGraphRepository):
     """
     KG menggunakan Neo4j — untuk production.
     Query Cypher langsung ke database.
-
-    Query ancestors:
-        MATCH (s)-[:IS_A*0..]->(a) WHERE s.name=$name
-        RETURN collect(DISTINCT a.name)
-
-    Query leaves of node:
-        MATCH (root)-[:IS_A*0..]->(desc)
-        WHERE root.name=$name AND NOT (desc)<-[:IS_A]-()
-        RETURN collect(DISTINCT desc.name)
     """
 
     def __init__(self, driver):
         self._driver = driver
-        self._total_leaves: Optional[int] = None
 
     def get_ancestors(self, node: str) -> set[str]:
         query = """
@@ -247,7 +237,6 @@ class Neo4jKnowledgeGraph(KnowledgeGraphRepository):
         with self._driver.session() as session:
             rec = session.run(query, name=node).single()
             leaves = set(rec["leaves"]) if rec and rec["leaves"] else set()
-            # Jika node sendiri tidak punya anak, dia adalah leaf
             if not leaves:
                 leaves = {node}
             return leaves
@@ -277,18 +266,6 @@ def compute_ic(node: str, graph: KnowledgeGraphRepository) -> float:
     Hitung Information Content intrinsik (Sánchez, Batet & Isern, 2011):
 
         IC(c) = -log( (|leaves(c)| / |ancestors(c)|) + 1 / (|max_leaves| + 1) )
-
-    Properti:
-        - IC(root) = 0.0  (paling tidak informatif)
-        - IC(leaf konkret) → tertinggi
-        - Semakin spesifik skill, semakin tinggi IC-nya
-
-    Args:
-        node  : nama skill atau SkillClass
-        graph : KnowledgeGraphRepository
-
-    Returns:
-        float: IC value >= 0.0
     """
     leaves_c   = graph.get_leaves(node)
     ancestors_c = graph.get_ancestors(node)
@@ -301,7 +278,6 @@ def compute_ic(node: str, graph: KnowledgeGraphRepository) -> float:
     if n_ancestors == 0 or n_max == 0:
         return 0.0
 
-    # Formula Sánchez 2011: -log((leaves/ancestors + 1) / (maxLeaves + 1))
     numerator   = (n_leaves / n_ancestors) + 1
     denominator = n_max + 1
     probability = numerator / denominator
@@ -312,29 +288,14 @@ def compute_ic(node: str, graph: KnowledgeGraphRepository) -> float:
 # ─── LCS (Least Common Subsumer) ──────────────────────────────────────────────
 
 def find_lcs(node_a: str, node_b: str, graph: KnowledgeGraphRepository) -> str:
-    """
-    Temukan Least Common Subsumer (ancestor bersama dengan IC tertinggi).
-
-    LCS = ancestor yang paling spesifik (paling informatif) yang merupakan
-    ancestor dari kedua node. Dalam kasus multiple LCS, ambil yang IC-nya
-    tertinggi.
-
-    Args:
-        node_a, node_b : dua skill yang dibandingkan
-        graph          : KnowledgeGraphRepository
-
-    Returns:
-        str: nama node LCS
-    """
+    """Temukan Least Common Subsumer (ancestor bersama dengan IC tertinggi)."""
     ancestors_a = graph.get_ancestors(node_a)
     ancestors_b = graph.get_ancestors(node_b)
     common = ancestors_a & ancestors_b
 
     if not common:
-        # Fallback ke root jika tidak ada common ancestor
         return "TechnicalSkill"
 
-    # Pilih common ancestor dengan IC tertinggi
     best = max(common, key=lambda n: compute_ic(n, graph))
     return best
 
@@ -349,21 +310,8 @@ def sanchez_similarity(
     """
     Hitung Sánchez Semantic Similarity antara dua skill.
 
-    Formula (Lin, 1998 dengan IC intrinsik dari Sánchez et al., 2011):
-
-        sim(a, b) = 2 × IC(LCS(a,b)) / (IC(a) + IC(b))
-
-    Kasus khusus:
-        - a == b                   → 1.0
-        - IC(a) + IC(b) == 0       → 0.0 (keduanya root, tidak informatif)
-        - Tidak ada common ancestor→ 0.0
-
-    Args:
-        skill_a, skill_b : dua skill yang dibandingkan
-        graph            : KnowledgeGraphRepository
-
-    Returns:
-        float: skor kemiripan semantik ∈ [0.0, 1.0]
+    Formula: sim(a, b) = 2 × IC(LCS(a,b)) / (IC(a) + IC(b))
+    Rentang: [0.0, 1.0]
     """
     if skill_a == skill_b:
         return 1.0
@@ -390,21 +338,6 @@ def compute_skill_score(
 ) -> dict:
     """
     Hitung skor skill talent terhadap daftar skill yang dibutuhkan klien.
-
-    Strategi: untuk setiap required skill, cari best-match dari semua
-    skill talent (similarity tertinggi). Agregasi = rata-rata best-match.
-
-    Args:
-        talent_skills   : skill talent dari PostgreSQL
-        required_skills : skill yang dibutuhkan klien (dari NER)
-        graph           : KnowledgeGraphRepository
-
-    Returns:
-        dict:
-            score    : float [0,1] — skor agregat
-            detail   : list breakdown per required skill
-            matched  : int — jumlah required skill terpenuhi (≥ threshold)
-            coverage : float — rasio required skill terpenuhi
     """
     THRESHOLD = 0.30
 
@@ -428,8 +361,8 @@ def compute_skill_score(
         })
 
     matched  = sum(1 for d in details if d["matched"])
-    avg      = sum(d["score"] for d in details) / len(details)
-    coverage = matched / len(required_skills)
+    avg      = sum(d["score"] for d in details) / len(details) if details else 0.0
+    coverage = matched / len(required_skills) if required_skills else 0.0
 
     return {
         "score":    round(avg, 6),
@@ -437,32 +370,3 @@ def compute_skill_score(
         "matched":  matched,
         "coverage": round(coverage, 4),
     }
-
-
-# ─── Quick Test ───────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    g = InMemoryKnowledgeGraph()
-
-    print("=== IC Values ===")
-    nodes = ["TechnicalSkill", "FrontendSkill", "JSFrameworkFrontend", "React.js", "Vue.js", "Laravel"]
-    for n in nodes:
-        ic = compute_ic(n, g)
-        leaves = len(g.get_leaves(n))
-        anc = len(g.get_ancestors(n))
-        print(f"  {n:25s} IC={ic:.4f}  leaves={leaves}  ancestors={anc}")
-
-    print("\n=== Sánchez Similarity ===")
-    pairs = [
-        ("React.js",   "React.js"),
-        ("React.js",   "Vue.js"),
-        ("React.js",   "Angular"),
-        ("React.js",   "Node.js"),
-        ("React.js",   "Laravel"),
-        ("React.js",   "Docker"),
-        ("Laravel",    "PHP"),
-        ("Django",     "Flask"),
-    ]
-    for a, b in pairs:
-        s = sanchez_similarity(a, b, g)
-        lcs = find_lcs(a, b, g)
-        print(f"  {a:15s} <-> {b:15s}  sim={s:.4f}  LCS={lcs}")

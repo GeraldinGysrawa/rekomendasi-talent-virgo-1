@@ -1,5 +1,8 @@
 """
 FastAPI Application — Virgo Talent Recommender
+==============================================
+Mode: real dengan PostgreSQL + Neo4j Knowledge Graph
+Similarity: Sánchez et al. (2011/2012) Intrinsic IC + Lin (1998)
 """
 
 from fastapi import FastAPI, HTTPException, Query
@@ -7,7 +10,7 @@ from pydantic import BaseModel, Field
 import sys, os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../"))
-from src.pipeline import recommend
+from src.pipeline import recommend, recommend_async, set_neo4j_graph
 from config.settings import get_settings
 
 app = FastAPI(
@@ -17,7 +20,7 @@ Sistem rekomendasi Talent PT Padepokan Tujuh Sembilan.
 
 **Pipeline (3 Increment):**
 - **NLP (Inc.1)**: NER — ekstrak 5 entitas: skill, pengalaman, lokasi, tipe proyek, tanggal mulai
-- **CBF (Inc.2)**: Tversky Similarity via Knowledge Graph (Rodriguez-Egenhofer 2003)
+- **CBF (Inc.2)**: Sánchez Semantic Similarity via Knowledge Graph (Sánchez et al. 2011/2012)
 - **SAW (Inc.3)**: Ranking multi-kriteria SAW + ROC weights (Barron & Barrett 1996)
 
 **Storage:**
@@ -38,6 +41,34 @@ class RecommendRequest(BaseModel):
         ]
     )
     top_k: int = Field(default=5, ge=1, le=20)
+
+
+@app.on_event("startup")
+async def startup():
+    """Inisialisasi koneksi ke PostgreSQL & Neo4j saat startup."""
+    settings = get_settings()
+    
+    if settings.app_mode == "real":
+        # Setup PostgreSQL pool
+        from src.db.connectors import get_pg_pool
+        await get_pg_pool()
+        print("✅ PostgreSQL pool initialized")
+        
+        # Setup Neo4j driver & KG
+        from src.db.connectors import get_neo4j_driver
+        driver = get_neo4j_driver()
+        set_neo4j_graph(driver)
+        print("✅ Neo4j driver initialized & set as KG")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Tutup koneksi saat shutdown."""
+    settings = get_settings()
+    if settings.app_mode == "real":
+        from src.db.connectors import close_all
+        await close_all()
+        print("✅ All connections closed")
 
 
 @app.get("/", tags=["Health"])
@@ -69,9 +100,23 @@ async def get_recommendations(request: RecommendRequest):
     - Hasil ekstraksi NER (5 entitas)
     - Bobot ROC yang digunakan
     - Daftar talent terranking dengan skor dan penjelasan per kriteria
+    
+    **Mode:**
+    - `inmemory`: data dummy, sync
+    - `real`: PostgreSQL + Neo4j, async
     """
     try:
-        result = recommend(query=request.query, top_k=request.top_k)
+        settings = get_settings()
+        
+        if settings.app_mode == "real":
+            # Async pipeline untuk mode real
+            from src.db.connectors import get_pg_pool
+            pool = await get_pg_pool()
+            result = await recommend_async(query=request.query, top_k=request.top_k, pg_pool=pool)
+        else:
+            # Sync pipeline untuk mode inmemory
+            result = recommend(query=request.query, top_k=request.top_k)
+        
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -102,7 +147,7 @@ async def get_skill_ancestors(skill_name: str):
     **Debug** — Tampilkan ancestor hierarki ontologi suatu skill.
     Berguna untuk memahami mengapa dua skill punya similarity score tertentu.
     """
-    from src.cbf.tversky import InMemoryKnowledgeGraph, tversky_similarity
+    from src.cbf.sanchez import InMemoryKnowledgeGraph
     graph = InMemoryKnowledgeGraph()
     ancestors = graph.get_ancestors(skill_name)
     return {
@@ -119,16 +164,14 @@ async def get_similarity(
     skill_b: str = Query(..., description="Skill yang dibutuhkan"),
 ):
     """
-    **Debug** — Hitung Tversky Similarity antara dua skill.
+    **Debug** — Hitung Sánchez Semantic Similarity antara dua skill.
     """
-    from src.cbf.tversky import InMemoryKnowledgeGraph, tversky_similarity
-    settings = get_settings()
+    from src.cbf.sanchez import InMemoryKnowledgeGraph, sanchez_similarity
     graph = InMemoryKnowledgeGraph()
-    score = tversky_similarity(skill_a, skill_b, graph, alpha=settings.tversky_alpha)
+    score = sanchez_similarity(skill_a, skill_b, graph)
     return {
         "skill_a":    skill_a,
         "skill_b":    skill_b,
-        "alpha":      settings.tversky_alpha,
         "similarity": score,
         "ancestors_a": sorted(list(graph.get_ancestors(skill_a))),
         "ancestors_b": sorted(list(graph.get_ancestors(skill_b))),

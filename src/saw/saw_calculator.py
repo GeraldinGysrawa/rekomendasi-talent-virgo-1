@@ -14,7 +14,7 @@ SAW (Taherdoost, 2023):
     Step 4: Ranking berdasarkan S_i descending
 
 5 Kriteria (semua BENEFIT — semakin tinggi semakin baik):
-    1. skill           : skor Tversky dari CBF [0,1]
+    1. skill           : skor Sánchez dari CBF [0,1]
     2. pengalaman      : kesesuaian pengalaman dengan kebutuhan [0,1]
     3. lokasi          : kesesuaian lokasi [0,1]
     4. preferensi_proyek : kesesuaian tipe proyek [0,1]
@@ -212,7 +212,7 @@ class TalentSAWInput:
     kode_talent: str
     nama: str
     # Raw values untuk tiap kriteria
-    skill_score: float                       # dari CBF Tversky
+    skill_score: float                       # dari CBF Sánchez
     pengalaman_tahun: float                  # raw tahun dari DB
     lokasi: str                              # kota dari DB
     preferensi_proyek: list                  # list tipe proyek dari DB

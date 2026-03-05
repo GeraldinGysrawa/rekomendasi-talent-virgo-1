@@ -8,6 +8,10 @@ di .env sesuai hasil konsultasi stakeholder.
 
 import os
 from functools import lru_cache
+from dotenv import load_dotenv
+
+# Load .env file
+load_dotenv()
 
 
 def _env(key: str, default: str) -> str:
@@ -31,9 +35,6 @@ class Settings:
         self.neo4j_uri: str      = _env("NEO4J_URI", "bolt://localhost:7687")
         self.neo4j_user: str     = _env("NEO4J_USER", "neo4j")
         self.neo4j_password: str = _env("NEO4J_PASSWORD", "password")
-
-        # ── Tversky ────────────────────────────────────────────────────────────
-        self.tversky_alpha: float = float(_env("TVERSKY_ALPHA", "0.5"))
 
         # ── ROC Criteria Ranking ───────────────────────────────────────────────
         self.criteria_rank_skill:              int = int(_env("CRITERIA_RANK_SKILL", "1"))
