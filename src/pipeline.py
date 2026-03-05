@@ -39,10 +39,19 @@ _graph_instance: KnowledgeGraphRepository = None
 
 
 def get_graph() -> KnowledgeGraphRepository:
-    """Get current KG instance (inmemory or neo4j)."""
+    """Get current KG instance (inmemory or neo4j sesuai APP_MODE)."""
     global _graph_instance
     if _graph_instance is None:
-        _graph_instance = InMemoryKnowledgeGraph()
+        settings = get_settings()
+        if settings.app_mode == "real":
+            # Mode real tanpa Neo4j init = error jelas (bukan fallback silent)
+            raise RuntimeError(
+                "Neo4j KG belum diinisialisasi! "
+                "Pastikan APP_MODE=real dan set_neo4j_graph(driver) sudah dipanggil di startup()."
+            )
+        else:
+            # Mode inmemory → gunakan fallback
+            _graph_instance = InMemoryKnowledgeGraph()
     return _graph_instance
 
 

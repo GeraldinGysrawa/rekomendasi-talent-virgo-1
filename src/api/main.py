@@ -171,9 +171,15 @@ async def get_similarity(
 ):
     """
     **Debug** — Hitung Sánchez Semantic Similarity antara dua skill.
+    
+    Bekerja di kedua mode:
+      * `inmemory`  → pakai InMemoryKnowledgeGraph
+      * `real`      → pakai Neo4jKnowledgeGraph sudah diset di startup
     """
-    from src.cbf.sanchez import InMemoryKnowledgeGraph, sanchez_similarity
-    graph = InMemoryKnowledgeGraph()
+    from src.cbf.sanchez import sanchez_similarity
+    from src.pipeline import get_graph
+    
+    graph = get_graph()  # Pakai instance yang sudah dikonfigurasi (InMemory atau Neo4j)
     score = sanchez_similarity(skill_a, skill_b, graph)
     return {
         "skill_a":    skill_a,
