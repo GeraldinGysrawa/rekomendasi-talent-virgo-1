@@ -135,6 +135,15 @@ class KnowledgeGraphRepository:
 
     def node_exists(self, node: str) -> bool:
         raise NotImplementedError
+    
+    def skill_exists(self, skill: str) -> bool:
+        """Alias nama khusus untuk API yang memeriksa keberadaan skill.
+
+        Semua implementasi KG dapat menggunakan node_exists karena pada dasarnya
+        skill adalah node dalam ontologi. Menambahkan method ini agar kode di luar
+        tidak perlu tahu nama method internal.
+        """
+        return self.node_exists(skill)
 
 
 # ─── In-Memory Knowledge Graph ────────────────────────────────────────────────

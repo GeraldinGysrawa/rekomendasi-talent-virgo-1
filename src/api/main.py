@@ -146,9 +146,15 @@ async def get_skill_ancestors(skill_name: str):
     """
     **Debug** — Tampilkan ancestor hierarki ontologi suatu skill.
     Berguna untuk memahami mengapa dua skill punya similarity score tertentu.
+
+    Bekerja di kedua mode:
+      * `inmemory`  → pakai InMemoryKnowledgeGraph
+      * `real`      → pakai Neo4jKnowledgeGraph sudah diset di startup
     """
-    from src.cbf.sanchez import InMemoryKnowledgeGraph
-    graph = InMemoryKnowledgeGraph()
+    # dapatkan graph instance yang sudah dikonfigurasi (InMemory atau Neo4j)
+    from src.pipeline import get_graph
+
+    graph = get_graph()
     ancestors = graph.get_ancestors(skill_name)
     return {
         "skill":    skill_name,
